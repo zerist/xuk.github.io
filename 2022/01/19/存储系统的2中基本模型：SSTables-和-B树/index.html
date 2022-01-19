@@ -11,7 +11,7 @@
   <script src="//busuanzi.ibruce.info/busuanzi/2.3/busuanzi.pure.mini.js" async></script>
   
   
-    <meta name="keywords" content="test," />
+    <meta name="keywords" content="" />
   
 
   
@@ -19,7 +19,7 @@
   
   
   <link rel="icon" type="image/x-icon" href="/logo.png">
-  <title>test [ zerist&#39;s blog ]</title>
+  <title>存储系统的2中基本模型：SSTables 和 B树 [ zerist&#39;s blog ]</title>
   
     <!-- stylesheets list from config.yml -->
     
@@ -76,19 +76,19 @@
   <article class="post" id="post">
     <header class="post-header text-center">
       <h1 class="title">
-        test
+        存储系统的2中基本模型：SSTables 和 B树
       </h1>
       <span>
         
-        <time class="time" datetime="2022-01-16T13:47:01.000Z">
-        2022-01-16
+        <time class="time" datetime="2022-01-19T13:08:31.000Z">
+        2022-01-19
       </time>
         
       </span>
       <span class="slash">/</span>
       <span class="post-meta">
       <span class="post-tags">
-        <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/test/" rel="tag">test</a></li></ul>
+        
       </span>
     </span>
       <span class="slash">/</span>
@@ -96,11 +96,17 @@
       <span id="busuanzi_value_page_pv"></span> 点击
     </span>
       <span class="slash">/</span>
-      <span class="read">阅读耗时 1 分钟</span>
+      <span class="read">阅读耗时 8 分钟</span>
     </header>
 
     <div class="post-content">
-      <h3 id="just-test-hexo"><a href="#just-test-hexo" class="headerlink" title="just test hexo"></a>just test hexo</h3>
+      <h3 id="引"><a href="#引" class="headerlink" title="引"></a>引</h3><p>说到存储系统，很容易就会让人联想到数据库，可以高效的存储与检索数据。<br>作为程序员，一般并不需要关心数据库内部是怎么存储和检索数据的，也不会想从头开始去实现自己的存储引擎，只需要选择一款适合项目的就行。但是为了协调工作负载以获得最高的存储性能，了解存储引擎在底层究竟做了什么还是很重要的。</p>
+<p>假如让你实现一个存储功能，你会怎么做呢？</p>
+<h3 id="csv文件存储"><a href="#csv文件存储" class="headerlink" title="csv文件存储"></a>csv文件存储</h3><p>要从存储系统中获取之前存进去的值，起码得知道要取哪个值吧。我们可以用一个唯一标识的key来标识这个值。<br>比较简单的，可以用一个csv格式的文件来存储数据，每次存储数据时，新添加一行key, val。 val可以为任意字符串，所以理论上可以存任何字符可以表示的数据。在需要取数据时，可以顺序扫描文件的每一行，以第一个”,”分割key和对应的val，当匹配到key时，取出来接下来的一行内容就是要取的val了。暂且将这类文件称为<strong>日志文件（log）</strong>。</p>
+<p>因为每次存储都是直接在文件末尾写入，即使在磁盘这种存储介质上，也是非常高效的（省去了磁盘寻址的时间，kafka的日志写入很快也是得益于此）。但是相对的，读取性能就很差了，需要扫描每一行意味着随着文件大小的增加，读取开销也会随着快速增长，很明显的O(n)时间复杂度。<br>如果可以知道每个key在文件中的相对位置（在这个例子中就是key的行号），就可以直接移动文件游标cursor到指定位置了。我们可以用<strong>索引（index）</strong>来帮助记录这个偏移量。索引是主数据衍生的附加数据，需要额外的空间来存储，同时在写入的时候也需要额外维护索引值。<br>很明显，索引的数据结构会是key-索引值的键值对，这和之前的k-v一样（索引文件和数据文件是同一个格式，类似mysql中的索引文件和数据文件都是B+树结构），但是索引值相对v来说会小很多，为了避免两次磁盘io，可以将索引存储在内存中。内存中的键值对数据结构，很容易就会让人联想到<strong>哈希表</strong>。很多编程语言都提供了类似的基本数据结构，很方便使用，具体底层可以google一下。这样我们就可以实现一个简单可行的存储系统了（Riak中的默认存储引擎Bitcask就是这么做的）</p>
+<p>在存储系统重启的时候，内存中的索引映射会丢失。基本的，可以读取整个日志文件来重新建立索引，不过这样可能会使启动时间大大增加。加速恢复索引可以参考哈希映射快照的实现。</p>
+<h3 id="日志压缩与合并"><a href="#日志压缩与合并" class="headerlink" title="日志压缩与合并"></a>日志压缩与合并</h3><p>我们可以将之前的一个大日志文件分成很多段，当段文件增长到一定大小时，写入下一个段文件，同时用二进制格式来存储文件。<br>另一个方面，在这种存储系统中，日志文件不会考虑键的重复问题，只是一味的在末尾追加数据，但是索引中只会保存最新的key的地址（当然你也可以用一个数组存同个key的所有地址，这样能找到所有历史版本的值），这样在日志文件中可能会有很多重复的key，当文件无法增长时（文件格式限制，磁盘空间限制等），可以<strong>压缩</strong>日志文件。<br>在写入新的段文件时，意味着旧的段文件不会再变化了，这时我们可以起几个后台进程将这些日志段进行压缩。为了保证在压缩时也能提供旧段文件的查询功能，可以用一个新的临时文件存储没有重复值的新段文件，并在压缩结束时替换掉旧段文件。由于去掉了重复键，有时候会使新的段文件变得很小，所以在压缩的时候也可以将多个段文件<strong>合并</strong>到一起（是不是很像redis的日志文件处理）。</p>
+
     </div>
 
     <div>全文完。</div>
@@ -109,7 +115,7 @@
     
   <div id="toc" class="toc-article">
     <strong class="toc-title">目录</strong>
-    <ol class="toc"><li class="toc-item toc-level-3"><a class="toc-link" href="#just-test-hexo"><span class="toc-text">just test hexo</span></a></li></ol>
+    <ol class="toc"><li class="toc-item toc-level-3"><a class="toc-link" href="#%E5%BC%95"><span class="toc-text">引</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#csv%E6%96%87%E4%BB%B6%E5%AD%98%E5%82%A8"><span class="toc-text">csv文件存储</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#%E6%97%A5%E5%BF%97%E5%8E%8B%E7%BC%A9%E4%B8%8E%E5%90%88%E5%B9%B6"><span class="toc-text">日志压缩与合并</span></a></li></ol>
   </div>
 
 
@@ -132,19 +138,14 @@
       <div class="post-nav-item post-nav-next">
         
           <span>〈 </span>
-          <a href="/2022/01/16/hello-world/" rel="next" title="Hello World">
-          Hello World
+          <a href="/2022/01/16/test/" rel="next" title="test">
+          test
           </a>
         
       </div>
   
       <div class="post-nav-item post-nav-prev">
           
-          <a href="/2022/01/19/%E5%AD%98%E5%82%A8%E7%B3%BB%E7%BB%9F%E7%9A%842%E4%B8%AD%E5%9F%BA%E6%9C%AC%E6%A8%A1%E5%9E%8B%EF%BC%9ASSTables-%E5%92%8C-B%E6%A0%91/" rel="prev" title="存储系统的2中基本模型：SSTables 和 B树">
-            存储系统的2中基本模型：SSTables 和 B树
-          </a>
-          <span>〉</span>
-        
       </div>
     </div>
   
